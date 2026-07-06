@@ -38,6 +38,7 @@ from mcp.server.auth.provider import (
     AuthorizationCode,
     AuthorizationParams,
     RefreshToken,
+    RegistrationError,
     construct_redirect_uri,
 )
 from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
@@ -49,6 +50,11 @@ REFRESH_TOKEN_TTL = 30 * 24 * 3600  # 30 days
 AUTH_CODE_TTL = 300
 PENDING_STATE_TTL = 600
 SCOPES = ["notes"]
+# DCR is unauthenticated by spec; a registration grants nothing without the
+# allowed GitHub login, so this cap only bounds state bloat from bots. If
+# bots ever fill it and a legitimate reconnect is blocked, delete
+# <state_dir>/clients.json and restart.
+MAX_CLIENTS: int = 50  # tests shrink this; annotate so it isn't Literal[50]
 
 GITHUB_AUTHORIZE_URL = "https://github.com/login/oauth/authorize"
 GITHUB_TOKEN_URL = "https://github.com/login/oauth/access_token"
@@ -212,6 +218,15 @@ class GitHubOAuthProvider:
         return self._clients.get(client_id)
 
     async def register_client(self, client_info: OAuthClientInformationFull) -> None:
+        if _cid(client_info) not in self._clients and len(self._clients) >= MAX_CLIENTS:
+            logger.warning(
+                "client registration rejected: limit reached",
+                extra={"max_clients": MAX_CLIENTS},
+            )
+            raise RegistrationError(
+                error="invalid_client_metadata",
+                error_description="registration limit reached",
+            )
         self._clients[_cid(client_info)] = client_info
         self._save_clients()
         logger.info(

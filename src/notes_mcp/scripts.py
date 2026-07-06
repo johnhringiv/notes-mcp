@@ -28,6 +28,16 @@ STDERR_CAP = 256 * 1024
 KEEPALIVE_SECONDS: int = 15  # tests shrink this; annotate so it isn't Literal[15]
 DESCRIPTION_CHARS = 200
 
+# Scripts are trusted (single user), but they must not inherit the server's
+# credentials — the realistic failure is a debugging script dumping `env`
+# into output that ends up committed or pasted somewhere.
+_SECRET_ENV_PREFIXES = ("GITHUB_TOKEN", "GITHUB_OAUTH_CLIENT_SECRET", "TUNNEL_TOKEN")
+
+
+def _script_env() -> dict[str, str]:
+    return {k: v for k, v in os.environ.items() if not k.startswith(_SECRET_ENV_PREFIXES)}
+
+
 ProgressFn = Callable[[str, float], Awaitable[None]]
 
 _EXTENSION_INTERPRETERS = {".py": ["python3"], ".sh": ["bash"]}
@@ -147,6 +157,7 @@ async def run_script(
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         start_new_session=True,  # so we can kill the whole process group
+        env=_script_env(),
     )
     assert proc.stdout is not None and proc.stderr is not None
 

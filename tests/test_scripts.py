@@ -164,3 +164,24 @@ async def test_run_script_progress_callback_fires(store: NotesStore, repo: Path)
     assert result["exit_code"] == 0
     assert len(events) >= 1
     assert events[0][0] == "phase one"  # latest stdout line rides along
+
+
+async def test_scripts_do_not_inherit_secrets(
+    store: NotesStore, repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("GITHUB_TOKEN", "super-secret-pat")
+    monkeypatch.setenv("GITHUB_OAUTH_CLIENT_SECRET", "super-secret-oauth")
+    monkeypatch.setenv("TUNNEL_TOKEN", "super-secret-tunnel")
+    monkeypatch.setenv("NOTES_REPO_URL", "https://example.com/x.git")  # non-secret survives
+    add_script(
+        repo,
+        "cycling-analysis",
+        "envdump.py",
+        "import os\nprint(sorted(k for k in os.environ if 'GITHUB' in k or 'TUNNEL' in k))\n"
+        "print(os.environ.get('NOTES_REPO_URL'))\n",
+    )
+    result = await run_script(store, "cycling-analysis", "envdump.py")
+    assert result["exit_code"] == 0
+    assert "super-secret" not in result["stdout"]
+    assert "GITHUB_TOKEN" not in result["stdout"]
+    assert "https://example.com/x.git" in result["stdout"]

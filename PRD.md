@@ -20,7 +20,13 @@ connector; survives unattended on a NAS.
 status/dashboard endpoint; a webapp UI; writing scripts via MCP
 (model-generated executable code committed to the repo); multi-user support;
 note deletion via MCP; wiki-style backlink management; committing script
-outputs; PR-based conflict handling.
+outputs; PR-based conflict handling; a **third-party-free profile** — direct
+TLS ingress (own reverse proxy + ACME instead of a Cloudflare Tunnel, which
+sees plaintext), a self-hosted git remote (bare repo/Forgejo instead of
+GitHub, needs SSH support in git_ops), and a non-GitHub identity step
+(passkey/WebAuthn page; the provider's `github_exchange` seam is where it
+swaps in). Note the model provider still sees note content — "third-party-
+free" can only cover infrastructure.
 
 ## Architecture
 

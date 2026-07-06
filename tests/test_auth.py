@@ -268,3 +268,27 @@ async def test_expired_and_wrong_type_tokens_rejected(provider: GitHubOAuthProvi
     assert await provider.load_access_token(expired) is None
     refresh = provider._mint("refresh", "c", "alice", 3600)
     assert await provider.load_access_token(refresh) is None  # type confusion blocked
+
+
+async def test_registration_cap(app_client: httpx.AsyncClient) -> None:
+    from notes_mcp import auth as auth_mod
+
+    original = auth_mod.MAX_CLIENTS
+    auth_mod.MAX_CLIENTS = 2
+    try:
+        assert (await register_client(app_client))["client_id"]
+        assert (await register_client(app_client))["client_id"]
+        resp = await app_client.post(
+            "/register",
+            json={
+                "client_name": "bot",
+                "redirect_uris": ["https://evil.example/cb"],
+                "grant_types": ["authorization_code", "refresh_token"],
+                "response_types": ["code"],
+                "token_endpoint_auth_method": "none",
+            },
+        )
+        assert resp.status_code == 400
+        assert "limit" in resp.text
+    finally:
+        auth_mod.MAX_CLIENTS = original
