@@ -1,0 +1,42 @@
+services:
+  mcp-server:
+    image: notes-mcp:0.1.0
+    build: .
+    container_name: notes-mcp
+    restart: unless-stopped
+    mem_limit: 2g
+    # cpus: 2  # unsupported on Synology DSM kernels (no CFS scheduler)
+    environment:
+      NOTES_REPO_URL: ${NOTES_REPO_URL:?set in .env}
+      NOTES_REPO_BRANCH: ${NOTES_REPO_BRANCH:-main}
+      GITHUB_TOKEN: ${GITHUB_TOKEN:?set in .env}
+      PUBLIC_URL: ${PUBLIC_URL:?set in .env}
+      GITHUB_OAUTH_CLIENT_ID: ${GITHUB_OAUTH_CLIENT_ID:?set in .env}
+      GITHUB_OAUTH_CLIENT_SECRET: ${GITHUB_OAUTH_CLIENT_SECRET:?set in .env}
+      GITHUB_ALLOWED_LOGIN: ${GITHUB_ALLOWED_LOGIN:?set in .env}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    volumes:
+      - notes-repo:/repo
+      - oauth-state:/data
+    networks:
+      - mcp
+    # No published ports: only cloudflared (same network) talks to it.
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: cloudflared
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run
+    environment:
+      TUNNEL_TOKEN: ${TUNNEL_TOKEN:?set in .env}
+    networks:
+      - mcp
+    depends_on:
+      - mcp-server
+
+volumes:
+  notes-repo:
+  oauth-state:
+
+networks:
+  mcp:

@@ -1,0 +1,11 @@
+.git
+.idea
+.venv
+tests
+PRD.md
+deploy/README.md
+.github
+.env
+secrets
+__pycache__
+*.pyc
