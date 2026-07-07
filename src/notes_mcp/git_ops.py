@@ -222,6 +222,38 @@ class GitOps:
             }
         )
 
+    def file_history(self, path: str, limit: int = 10) -> list[dict[str, Any]]:
+        """Commits touching `path` (a file or directory), newest first."""
+        if not self.enabled:
+            return []
+        result = self._run(
+            "log", f"-{max(1, min(limit, 100))}", "--format=%H%x1f%an%x1f%cI%x1f%s", "--", path
+        )
+        if result.returncode != 0:
+            return []
+        entries = []
+        for line in result.stdout.splitlines():
+            sha, author, date, message = line.split("\x1f", 3)
+            entries.append({"commit": sha, "author": author, "date": date, "message": message})
+        return entries
+
+    def restore_file(self, commit: str, path: str) -> dict[str, Any] | None:
+        """Check out `path` as it was at `commit` (staged, uncommitted).
+
+        Returns a structured error dict on failure, None on success.
+        """
+        if not self.enabled:
+            return {"error": "git_error", "details": {"message": "not a git repository"}}
+        if self._run("rev-parse", "--verify", f"{commit}^{{commit}}").returncode != 0:
+            return {"error": "invalid_commit", "details": {"commit": commit}}
+        result = self._run("checkout", commit, "--", path)
+        if result.returncode != 0:
+            return {
+                "error": "restore_failed",
+                "details": {"commit": commit, "stderr": result.stderr.strip()[:500]},
+            }
+        return None
+
     def hard_reset_if_dirty(self) -> bool:
         """Reset a dirty tree to HEAD (startup recovery). Returns True if reset."""
         if not self.enabled:

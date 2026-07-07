@@ -201,6 +201,86 @@ async def add_file_to_note(note_id: str, filename: str, content_b64: str) -> dic
     )
 
 
+@mcp.tool()
+@logged_tool
+def note_history(note_id: str, limit: int = 10) -> dict[str, Any]:
+    """List the git commits that touched a note, newest first.
+
+    Returns {history: [{commit, author, date, message}]}. Use a commit sha
+    with restore_note to bring back an older version.
+    """
+    if err := store.check_note(note_id):
+        return err
+    path = note_id if not note_id.endswith(".md") else store.md_relpath(note_id)
+    return {"history": git_ops.file_history(path, limit)}
+
+
+@mcp.tool()
+@logged_tool
+def read_note_file(note_id: str, filename: str) -> dict[str, Any]:
+    """Read an attached file from a folder note.
+
+    `filename` is relative to the note folder as listed by read_note (e.g.
+    "weights.csv" or "scripts/analyze.py"). Text comes back as utf-8
+    `content`; binary as base64 `content_b64` (check `encoding`).
+    """
+    return files.read_note_file(store, note_id, filename)
+
+
+@mcp.tool()
+@logged_tool
+async def write_note(note_id: str, content: str) -> dict[str, Any]:
+    """Replace a note's entire markdown body.
+
+    For restructures too large for edit_note chains. The old version stays
+    in git history (see note_history / restore_note), so this is safe.
+    """
+    return await _locked_write(
+        lambda: store.write_note(note_id, content),
+        lambda _: [store.md_relpath(note_id)],
+        lambda _: f"Rewrite {note_id}",
+    )
+
+
+@mcp.tool()
+@logged_tool
+async def move_note(note_id: str, new_note_id: str) -> dict[str, Any]:
+    """Rename or move a note (folder notes move with all their files).
+
+    Both ids must be the same kind: .md to .md, or folder to folder.
+    Links in other notes are NOT rewritten.
+    """
+    return await _locked_write(
+        lambda: store.move_note(note_id, new_note_id),
+        lambda _: [note_id, new_note_id],
+        lambda _: f"Move {note_id} to {new_note_id}",
+    )
+
+
+@mcp.tool()
+@logged_tool
+async def restore_note(note_id: str, commit: str) -> dict[str, Any]:
+    """Restore a note's markdown body to how it was at a given commit.
+
+    Get commit shas from note_history. The restore itself is a new commit,
+    so nothing is ever lost — restores can be restored from.
+    """
+
+    def do_restore() -> dict[str, Any]:
+        if err := store.check_note(note_id):
+            return err
+        if err := git_ops.restore_file(commit, store.md_relpath(note_id)):
+            return err
+        store.invalidate_updated_at(note_id)
+        return {"status": "restored", "note_id": note_id, "restored_from": commit}
+
+    return await _locked_write(
+        do_restore,
+        lambda _: [store.md_relpath(note_id)],
+        lambda _: f"Restore {note_id} to {commit[:7]}",
+    )
+
+
 # ----------------------------------------------------------------------
 # script tools
 

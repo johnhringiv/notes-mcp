@@ -54,3 +54,49 @@ def add_file_to_note(
         "size": len(data),
         "overwritten": overwritten,
     }
+
+
+def read_note_file(store: NotesStore, note_id: str, filename: str) -> dict[str, Any]:
+    """Return a file's content from a folder note (utf-8 text or base64).
+
+    `filename` is relative to the note folder and may include subdirectories
+    (e.g. "scripts/analyze.py"), matching the names read_note lists.
+    """
+    if err := store.check_note(note_id):
+        return err
+    if is_file_note(note_id):
+        return error(
+            "not_a_folder_note",
+            note_id=note_id,
+            reason="file notes have no attached files; use read_note for the body",
+        )
+    parts = filename.replace("\\", "/").split("/")
+    if not filename.strip() or any(not p or p.startswith(".") or p == ".." for p in parts):
+        return error(
+            "invalid_filename",
+            filename=filename,
+            reason="path must be relative, without dot segments",
+        )
+    note_dir = store.note_dir(note_id).resolve()
+    path = (note_dir / filename).resolve()
+    if not path.is_relative_to(note_dir):
+        return error("invalid_filename", filename=filename, reason="path escapes the note folder")
+    if not path.is_file():
+        return error("file_not_found", note_id=note_id, filename=filename)
+    data = path.read_bytes()
+    if len(data) > MAX_FILE_BYTES:
+        return error("file_too_large", size=len(data), max_bytes=MAX_FILE_BYTES)
+    from notes_mcp.notes import _file_type
+
+    meta = {
+        "note_id": note_id,
+        "filename": filename,
+        "size": len(data),
+        "type": _file_type(filename),
+    }
+    try:
+        if b"\x00" in data:  # NUL byte = binary, even if it decodes (git's heuristic)
+            raise UnicodeDecodeError("utf-8", data, 0, 1, "binary content")
+        return {**meta, "encoding": "utf-8", "content": data.decode("utf-8")}
+    except UnicodeDecodeError:
+        return {**meta, "encoding": "base64", "content_b64": base64.b64encode(data).decode()}

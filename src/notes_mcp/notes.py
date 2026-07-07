@@ -14,6 +14,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 import re
+import shutil
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -86,6 +87,17 @@ def validate_note_id(note_id: str) -> dict[str, Any] | None:
             note_id=note_id,
             reason="only the last path segment may end in .md",
         )
+    return None
+
+
+def _reserved_dir(note_id: str) -> dict[str, Any] | None:
+    for reserved in (TEMPLATES_DIR,):
+        if note_id == reserved or note_id.startswith(f"{reserved}/"):
+            return error(
+                "invalid_note_id",
+                note_id=note_id,
+                reason=f"{reserved}/ is reserved",
+            )
     return None
 
 
@@ -383,8 +395,8 @@ class NotesStore:
             return err
         if not title.strip():
             return error("invalid_title", reason="title is empty")
-        if note_id == TEMPLATES_DIR or note_id.startswith(f"{TEMPLATES_DIR}/"):
-            return error("invalid_note_id", note_id=note_id, reason="reserved directory")
+        if err := _reserved_dir(note_id):
+            return err
         md_path = self.md_path(note_id)
         if (self.note_dir(note_id) if not is_file_note(note_id) else md_path).exists():
             return error("note_already_exists", note_id=note_id)
@@ -421,6 +433,46 @@ class NotesStore:
         index_path.write_text(new_text, encoding="utf-8")
         self.invalidate_updated_at(note_id)
         return {"status": "appended", "note_id": note_id, "appended_to": appended_to}
+
+    def write_note(self, note_id: str, content: str) -> dict[str, Any]:
+        if err := self.check_note(note_id):
+            return err
+        if not content.strip():
+            return error(
+                "invalid_content",
+                reason="content is empty; deleting notes via MCP is not supported",
+            )
+        if not content.endswith("\n"):
+            content += "\n"
+        self.md_path(note_id).write_text(content, encoding="utf-8")
+        self.invalidate_updated_at(note_id)
+        return {"status": "written", "note_id": note_id, "bytes": len(content.encode())}
+
+    def move_note(self, note_id: str, new_note_id: str) -> dict[str, Any]:
+        if err := self.check_note(note_id):
+            return err
+        if err := validate_note_id(new_note_id):
+            return err
+        if is_file_note(note_id) != is_file_note(new_note_id):
+            return error(
+                "invalid_note_id",
+                note_id=new_note_id,
+                reason="source and destination must be the same kind "
+                "(both .md files or both folders)",
+            )
+        if err := _reserved_dir(new_note_id):
+            return err
+        source = self.md_path(note_id) if is_file_note(note_id) else self.note_dir(note_id)
+        dest = (
+            self.md_path(new_note_id) if is_file_note(new_note_id) else self.note_dir(new_note_id)
+        )
+        if dest.exists():
+            return error("note_already_exists", note_id=new_note_id)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(source, dest)
+        self.invalidate_updated_at(note_id)
+        self.invalidate_updated_at(new_note_id)
+        return {"status": "moved", "from": note_id, "to": new_note_id}
 
     def edit_note(self, note_id: str, old_str: str, new_str: str) -> dict[str, Any]:
         if err := self.check_note(note_id):
