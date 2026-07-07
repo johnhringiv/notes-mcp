@@ -20,7 +20,14 @@ connector; survives unattended on a NAS.
 status/dashboard endpoint; a webapp UI; writing scripts via MCP
 (model-generated executable code committed to the repo); multi-user support;
 note deletion via MCP; wiki-style backlink management; committing script
-outputs; PR-based conflict handling; a **third-party-free profile** — direct
+outputs; PR-based conflict handling; the **semantic layer** — staged plan:
+the `index: true` note-frontmatter convention and the resource class exist
+now so curation accumulates; stage 1 is SQLite FTS5/BM25 over everything
+(trigger: lexical search visibly missing); stage 2 is local embeddings
+(sqlite-vec, small ONNX model on the host) over resources by default plus
+opted-in notes, chunked by heading (trigger: conceptual queries failing
+against accumulated reference libraries) — API embeddings are rejected as
+contrary to the third-party-free direction; a **third-party-free profile** — direct
 TLS ingress (own reverse proxy + ACME instead of a Cloudflare Tunnel, which
 sees plaintext), a self-hosted git remote (bare repo/Forgejo instead of
 GitHub, needs SSH support in git_ops), and a non-GitHub identity step
@@ -79,6 +86,34 @@ Templates live in `<repo>/.templates/*.md` with `{{title}}`, `{{tags}}`,
 `{{created}}`, `{{note_id}}` placeholders (plain substitution). A built-in
 default is compiled into the server so the repo needs no bootstrap.
 
+## Resources (imported reference documents)
+
+Resources are a second content class, deliberately distinct from notes:
+
+|                         | Note                               | Resource                                   |
+| ----------------------- | ---------------------------------- | ------------------------------------------ |
+| Origin                  | authored by the user               | imported (article, spec, paper, book)      |
+| Lifecycle               | living — append/edit/rewrite       | replaced wholesale on re-import            |
+| In `list_notes`         | yes                                | no — `list_resources` or search            |
+| Read pattern            | whole (notes are small)            | ranged windows, never whole                |
+| Semantic index (future) | opt-in (`index: true` frontmatter) | on by default — findability is the point   |
+| Metadata                | title/tags                         | `source` URL, `retrieved` date, `fidelity` |
+
+They live under a top-level `resources/<topic>/<slug>.md`, text-only by
+construction (`add_resource` accepts strings; convert documents before
+import). Unified lexical search covers them — `search_notes` hits inside
+`resources/` return a `resource_id` instead of a `note_id`.
+
+**Ingestion honesty:** a model cannot faithfully reproduce a long document
+in one tool call, so transfers are chunked (`add_resource` create, then
+`append: true` calls; responses report `total_lines` for verification) and
+every resource declares `fidelity: verbatim` or `fidelity: digest` in
+frontmatter. Book-scale material (> ~5k lines) is imported by committing
+directly to the repo from a desktop — the chat path refuses to pretend.
+The bundled **resource-ingestion skill** (`skills/resource-ingestion/`)
+encodes this workflow for the Claude client; imported documents skip the
+prettier formatting step so they stay verbatim.
+
 ## Tool surface (v1 — complete)
 
 All tools return JSON objects; expected failures return
@@ -88,7 +123,8 @@ categories: `invalid_note_id`, `note_not_found`, `note_already_exists`,
 `invalid_filename`, `not_a_folder_note`, `file_too_large`,
 `invalid_script_name`, `script_not_found`, `unrecognized_interpreter`,
 `timeout`, `merge_conflict`, `push_failed`, `git_error`, `search_failed`,
-`internal_error`.
+`file_not_found`, `invalid_commit`, `restore_failed`, `invalid_content`,
+`invalid_resource_id`, `resource_not_found`, `internal_error`.
 
 | Tool                                                        | Returns                                                                             | Notes                                                                                          |
 | ----------------------------------------------------------- | ----------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
@@ -101,6 +137,15 @@ categories: `invalid_note_id`, `note_not_found`, `note_already_exists`,
 | `add_file_to_note(note_id, filename, content_b64)`          | `{status, filename, size, overwritten, git}`                                        | folder notes only; bare filename; ≤20 MB; overwrites (flagged)                                 |
 | `list_scripts(note_id)`                                     | `{scripts: [{name, description}]}`                                                  | description = docstring or top comment, ≤200 chars                                             |
 | `run_script(note_id, script_name, args?, timeout_seconds?)` | `{exit_code, stdout, stderr, duration_seconds, stdout_truncated, stderr_truncated}` | see below                                                                                      |
+
+| `read_note_file(note_id, filename, start_line?, limit=500)` | `{content or content_b64, encoding, size, type}` | folder notes; ranged reads for large text files; NUL-byte binary detection |
+| `write_note(note_id, content)` | `{status, note_id, bytes, git}` | full-body replace; old version stays in history |
+| `move_note(note_id, new_note_id)` | `{status, from, to, git}` | same-kind only; folder notes move with all files; links not rewritten |
+| `note_history(note_id, limit=10)` | `{history: [{commit, author, date, message}]}` | newest first |
+| `restore_note(note_id, commit)` | `{status, restored_from, git}` | restores the markdown body as a NEW commit — undo that is itself undoable |
+| `list_resources()` | `{resources: [{id, title, source, fidelity, retrieved, size, updated_at}]}` | imported documents, not notes |
+| `add_resource(resource_id, content, append=false)` | `{status, resource_id, size, total_lines, git}` | chunked transfer via append; replaces wholesale without it; skips prettier |
+| `read_resource(resource_id, start_line=1, limit=200)` | `{content, start_line, end_line, total_lines}` | ranged only — a book never comes back whole |
 
 Write-tool responses carry `git: {committed, pushed, commit, formatted}`.
 

@@ -277,6 +277,7 @@ def write_flow(
     commit_paths: Callable[[dict[str, Any]], list[str]],
     message: Callable[[dict[str, Any]], str],
     formatter: str | None = None,
+    format_markdown_files: bool = True,
 ) -> dict[str, Any]:
     """pull → mutate → format markdown → commit/push.
 
@@ -291,7 +292,9 @@ def write_flow(
         if "error" in result:
             return result
         paths = commit_paths(result)
-        formatted = format_markdown(git_ops.repo_path, paths, formatter)
+        formatted = (
+            format_markdown(git_ops.repo_path, paths, formatter) if format_markdown_files else False
+        )
         git_result = git_ops.commit_and_push(paths, message(result))
         return {**result, "git": {**git_result, "formatted": formatted}}
     except GitError as exc:

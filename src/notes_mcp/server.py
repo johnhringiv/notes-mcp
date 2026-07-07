@@ -22,7 +22,7 @@ from pydantic import AnyHttpUrl
 from starlette.requests import Request
 from starlette.responses import JSONResponse, RedirectResponse, Response
 
-from notes_mcp import files, scripts
+from notes_mcp import files, resources, scripts
 from notes_mcp.auth import SCOPES, CallbackError, GitHubOAuthProvider
 from notes_mcp.config import Settings
 from notes_mcp.git_ops import GitError, GitOps, write_flow
@@ -80,10 +80,11 @@ async def _locked_write(
     mutate: Callable[[], dict[str, Any]],
     commit_paths: Callable[[dict[str, Any]], list[str]],
     message: Callable[[dict[str, Any]], str],
+    format_markdown_files: bool = True,
 ) -> dict[str, Any]:
     async with _write_lock:
         return await anyio.to_thread.run_sync(
-            write_flow, store, git_ops, mutate, commit_paths, message
+            write_flow, store, git_ops, mutate, commit_paths, message, None, format_markdown_files
         )
 
 
@@ -217,14 +218,18 @@ def note_history(note_id: str, limit: int = 10) -> dict[str, Any]:
 
 @mcp.tool()
 @logged_tool
-def read_note_file(note_id: str, filename: str) -> dict[str, Any]:
+def read_note_file(
+    note_id: str, filename: str, start_line: int | None = None, limit: int = 500
+) -> dict[str, Any]:
     """Read an attached file from a folder note.
 
     `filename` is relative to the note folder as listed by read_note (e.g.
     "weights.csv" or "scripts/analyze.py"). Text comes back as utf-8
-    `content`; binary as base64 `content_b64` (check `encoding`).
+    `content`; binary as base64 `content_b64` (check `encoding`). For large
+    text files pass start_line to read a window (limit lines, max 2000)
+    instead of the whole file.
     """
-    return files.read_note_file(store, note_id, filename)
+    return files.read_note_file(store, note_id, filename, start_line, limit)
 
 
 @mcp.tool()
@@ -278,6 +283,58 @@ async def restore_note(note_id: str, commit: str) -> dict[str, Any]:
         do_restore,
         lambda _: [store.md_relpath(note_id)],
         lambda _: f"Restore {note_id} to {commit[:7]}",
+    )
+
+
+# ----------------------------------------------------------------------
+# resource tools (imported reference documents; see resources.py and PRD.md)
+
+
+@mcp.tool()
+@logged_tool
+def list_resources() -> dict[str, Any]:
+    """List imported reference documents (articles, specs, papers).
+
+    Resources are reference material, distinct from notes: read them with
+    read_resource (ranged), never edit them in place. Returns
+    {resources: [{id, title, source, fidelity, retrieved, size, updated_at}]}.
+    """
+    return resources.list_resources(store)
+
+
+@mcp.tool()
+@logged_tool
+def read_resource(resource_id: str, start_line: int = 1, limit: int = 200) -> dict[str, Any]:
+    """Read a window of a resource document (never the whole thing).
+
+    Returns {content, start_line, end_line, total_lines}; page by advancing
+    start_line. Use search_notes first to find the relevant line numbers —
+    search covers resources and reports hits with a resource_id.
+    """
+    return resources.read_resource(store, resource_id, start_line, limit)
+
+
+@mcp.tool()
+@logged_tool
+async def add_resource(resource_id: str, content: str, append: bool = False) -> dict[str, Any]:
+    """Import a reference document, or append the next chunk of one.
+
+    `resource_id` is a path like "maeve/austral-spec.md" (.md or .txt only —
+    convert documents to text first). Long documents must be transferred in
+    chunks: first call creates, subsequent calls use append=true; verify
+    total_lines afterwards. Start the document with frontmatter recording
+    source (URL), retrieved (date), and fidelity ("verbatim" or "digest").
+    Without append, an existing resource is replaced wholesale.
+    """
+    return await _locked_write(
+        lambda: resources.add_resource(store, resource_id, content, append),
+        lambda _: [f"resources/{resource_id}"],
+        lambda r: (
+            f"Add resource: {resource_id}"
+            if r["status"] == "added"
+            else f"Update resource: {resource_id}"
+        ),
+        format_markdown_files=False,  # imported documents stay verbatim
     )
 
 

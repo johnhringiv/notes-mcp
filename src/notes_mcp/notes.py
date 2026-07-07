@@ -91,12 +91,12 @@ def validate_note_id(note_id: str) -> dict[str, Any] | None:
 
 
 def _reserved_dir(note_id: str) -> dict[str, Any] | None:
-    for reserved in (TEMPLATES_DIR,):
+    for reserved in (TEMPLATES_DIR, "resources"):
         if note_id == reserved or note_id.startswith(f"{reserved}/"):
             return error(
                 "invalid_note_id",
                 note_id=note_id,
-                reason=f"{reserved}/ is reserved",
+                reason=f"{reserved}/ is reserved (use the resource tools for resources/)",
             )
     return None
 
@@ -226,6 +226,8 @@ class NotesStore:
             for child in sorted(directory.iterdir()):
                 if child.name.startswith("."):
                     continue
+                if directory == self.repo_path and child.name == "resources":
+                    continue  # resources are documents, not notes (see resources.py)
                 if child.is_dir():
                     if child.name == "scripts":
                         continue
@@ -278,6 +280,7 @@ class NotesStore:
                     "id": note_id,
                     "title": title,
                     "tags": tags,
+                    "indexed": fm.get("index") is True,
                     "updated_at": self.updated_at(note_id),
                     "path": self.md_relpath(note_id),
                 }
@@ -342,14 +345,17 @@ class NotesStore:
             data = event["data"]
             rel_file = Path(data["path"]["text"]).as_posix().removeprefix("./")
             line_number = data["line_number"]
-            results.append(
-                {
-                    "note_id": self._match_note_id(rel_file),
-                    "file": rel_file,
-                    "line_number": line_number,
-                    "snippet": self._snippet(rel_file, line_number),
-                }
-            )
+            hit: dict[str, Any] = {
+                "file": rel_file,
+                "line_number": line_number,
+                "snippet": self._snippet(rel_file, line_number),
+            }
+            if rel_file.startswith("resources/"):
+                hit["resource_id"] = rel_file.removeprefix("resources/")
+                hit["note_id"] = None
+            else:
+                hit["note_id"] = self._match_note_id(rel_file)
+            results.append(hit)
         return {"results": results}
 
     def _owning_note(self, rel_file: str) -> str | None:

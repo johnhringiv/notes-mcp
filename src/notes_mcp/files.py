@@ -56,7 +56,13 @@ def add_file_to_note(
     }
 
 
-def read_note_file(store: NotesStore, note_id: str, filename: str) -> dict[str, Any]:
+def read_note_file(
+    store: NotesStore,
+    note_id: str,
+    filename: str,
+    start_line: int | None = None,
+    limit: int = 500,
+) -> dict[str, Any]:
     """Return a file's content from a folder note (utf-8 text or base64).
 
     `filename` is relative to the note folder and may include subdirectories
@@ -97,6 +103,19 @@ def read_note_file(store: NotesStore, note_id: str, filename: str) -> dict[str, 
     try:
         if b"\x00" in data:  # NUL byte = binary, even if it decodes (git's heuristic)
             raise UnicodeDecodeError("utf-8", data, 0, 1, "binary content")
-        return {**meta, "encoding": "utf-8", "content": data.decode("utf-8")}
+        text = data.decode("utf-8")
     except UnicodeDecodeError:
         return {**meta, "encoding": "base64", "content_b64": base64.b64encode(data).decode()}
+    if start_line is None:
+        return {**meta, "encoding": "utf-8", "content": text}
+    lines = text.splitlines()
+    start = max(1, start_line)
+    window = lines[start - 1 : start - 1 + max(1, min(limit, 2000))]
+    return {
+        **meta,
+        "encoding": "utf-8",
+        "content": "\n".join(window),
+        "start_line": start,
+        "end_line": start + len(window) - 1,
+        "total_lines": len(lines),
+    }
