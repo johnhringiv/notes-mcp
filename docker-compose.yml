@@ -1,11 +1,18 @@
+# Standard self-host path: copy .env.example → .env, fill it in, then
+#   docker compose up -d
+# Nothing here needs editing — everything tunable lives in .env
+# (COMPOSE_PROFILES picks the ingress; see "Bring your own reverse proxy"
+# in README.md for the docker-compose.override.yml pattern).
+#
+# Synology/DSM hosts: use deploy/deploy.sh instead — DSM's firewall drops
+# egress from compose-created custom bridge networks (see deploy/README.md).
 services:
   mcp-server:
-    image: notes-mcp:0.1.0
+    image: ${IMAGE:-ghcr.io/johnhringiv/notes-mcp:latest}
     build: .
     container_name: notes-mcp
     restart: unless-stopped
     mem_limit: 2g
-    # cpus: 2  # unsupported on Synology DSM kernels (no CFS scheduler)
     environment:
       NOTES_REPO_URL: ${NOTES_REPO_URL:?set in .env}
       NOTES_REPO_BRANCH: ${NOTES_REPO_BRANCH:-main}
@@ -20,15 +27,22 @@ services:
       - oauth-state:/data
     networks:
       - mcp
-    # No published ports: only cloudflared (same network) talks to it.
+    # No published ports: ingress (cloudflared, or your own reverse proxy
+    # added via an override file) is the only way in.
 
+  # Default ingress; enabled by COMPOSE_PROFILES=cloudflared in .env.
+  # Using your own reverse proxy instead: set COMPOSE_PROFILES= (empty) and
+  # publish the server port with a docker-compose.override.yml (README.md).
   cloudflared:
     image: cloudflare/cloudflared:latest
     container_name: cloudflared
     restart: unless-stopped
+    profiles:
+      - cloudflared
     command: tunnel --no-autoupdate run
     environment:
-      TUNNEL_TOKEN: ${TUNNEL_TOKEN:?set in .env}
+      # :- not :? — compose interpolates this file even when the profile is off
+      TUNNEL_TOKEN: ${TUNNEL_TOKEN:-}
     networks:
       - mcp
     depends_on:

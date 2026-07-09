@@ -17,7 +17,9 @@ RUN apt-get update \
     && npm cache clean --force \
     && rm -rf /var/lib/apt/lists/*
 
-# UID 1000 matches the repo owner on the NAS volume (verify Synology side).
+# Runs as fixed UID 1000 (the first regular user on most Linux hosts). Named
+# volumes are chowned automatically; only relevant if you bind-mount /repo or
+# /data — then the host paths must be writable by UID 1000.
 # /data holds OAuth state (signing secret, client registrations).
 RUN useradd --uid 1000 --create-home notes \
     && mkdir /repo /data && chown notes:notes /repo /data

@@ -21,11 +21,11 @@ IMAGE_TAR="${2:-}"
 
 [ -f "$ENV_FILE" ] || { echo "missing $ENV_FILE (copy .env.example and fill it in)"; exit 1; }
 
-# Image ref: $IMAGE env > IMAGE= line in the env file > local default.
+# Image ref: $IMAGE env > IMAGE= line in the env file > public registry image.
 if [ -z "$IMAGE" ]; then
     IMAGE=$(grep -E '^IMAGE=' "$ENV_FILE" | tail -1 | cut -d= -f2-)
 fi
-IMAGE="${IMAGE:-notes-mcp:0.1.0}"
+IMAGE="${IMAGE:-ghcr.io/johnhringiv/notes-mcp:latest}"
 
 # cloudflared needs TUNNEL_TOKEN as its own env; pull it out of the env file.
 TUNNEL_TOKEN=$(grep -E '^TUNNEL_TOKEN=' "$ENV_FILE" | tail -1 | cut -d= -f2-)

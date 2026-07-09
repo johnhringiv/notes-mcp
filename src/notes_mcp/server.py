@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import os
 from collections.abc import Callable
+from importlib.metadata import version as _package_version
 from typing import Any
 
 import anyio.to_thread
@@ -28,6 +29,8 @@ from notes_mcp.config import Settings
 from notes_mcp.git_ops import GitError, GitOps, write_flow
 from notes_mcp.logging import logged_tool, logger, setup_logging
 from notes_mcp.notes import NotesStore
+
+VERSION = _package_version("notes-mcp")
 
 settings = Settings.from_env()
 store = NotesStore(settings.notes_repo_path)
@@ -396,8 +399,8 @@ async def run_script(
 async def health(request: Request) -> Response:
     """Unauthenticated liveness probe: 200 iff the working tree is readable."""
     if settings.notes_repo_path.is_dir() and os.access(settings.notes_repo_path, os.R_OK):
-        return JSONResponse({"status": "ok"})
-    return JSONResponse({"status": "repo_unreadable"}, status_code=503)
+        return JSONResponse({"status": "ok", "version": VERSION})
+    return JSONResponse({"status": "repo_unreadable", "version": VERSION}, status_code=503)
 
 
 @mcp.custom_route("/auth/callback", methods=["GET"])  # type: ignore[untyped-decorator]

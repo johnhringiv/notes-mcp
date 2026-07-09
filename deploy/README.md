@@ -1,59 +1,24 @@
-# Deployment runbook
+# Deploy runbook: script deploys, continuous deploy, Synology
 
-How to stand up (or update) notes-mcp behind a Cloudflare Tunnel, with
-Synology (DSM) specifics called out where they bite.
+The standard self-host path is `docker compose up -d` — see
+[Self-hosting in the main README](../README.md#self-hosting) for the full
+walkthrough (GitHub OAuth app, PAT, tunnel, env file, connecting Claude).
 
-## One-time setup
+This runbook covers the **script-based path** (`deploy.sh` — plain
+`docker run`, no compose), which exists for hosts where compose networking
+is a liability, chiefly Synology/DSM. It assumes the one-time setup from the
+main README is done and you have a filled-in env file (`chmod 600`).
 
-### 1. GitHub OAuth app (login identity)
-
-github.com → Settings → Developer settings → **OAuth Apps** → New OAuth App
-(not a GitHub App):
-
-- Homepage: `https://<your-hostname>`
-- Authorization callback URL: `https://<your-hostname>/auth/callback` (exact)
-- Leave "Enable Device Flow" unchecked
-- Save the **Client ID** (public) and generate a **client secret** (shown once)
-
-### 2. Fine-grained PAT (git push credential)
-
-github.com → Settings → Developer settings → Personal access tokens →
-**Fine-grained tokens**:
-
-- Repository access: _Only select repositories_ → your notes repo
-- Permissions → Repository → **Contents: Read and write** (nothing else)
-- When it expires, pushes fail with `push_failed`/`git_error` in the logs —
-  rotate it in the env file and re-run the deploy script.
-
-### 3. Cloudflare Tunnel
-
-Zone must be on Cloudflare. Either via the Zero Trust dashboard
-(Networks → Tunnels → Create → Cloudflared; copy the token; add public
-hostname `<host>` → `http://localhost:8000`) or via API. Do **not** put a
-Cloudflare Access application in front of `/mcp` — the server does its own
-OAuth, and Access breaks the Claude connector (see PRD decision log).
-
-The ingress target is `http://localhost:8000` because cloudflared runs in
-the server container's network namespace (see below).
-
-DNS: the dashboard/API creates the proxied CNAME
-`<host> → <tunnel-id>.cfargotunnel.com`. An existing wildcard record doesn't
-conflict — the explicit record wins.
-
-### 4. Env file
-
-Copy `.env.example` → e.g. `notes-mcp.env`, fill in: `NOTES_REPO_URL`,
-`GITHUB_TOKEN`, `PUBLIC_URL`, `GITHUB_OAUTH_CLIENT_ID`,
-`GITHUB_OAUTH_CLIENT_SECRET`, `GITHUB_ALLOWED_LOGIN` (your GitHub username —
-the only login allowed through), and `TUNNEL_TOKEN`. `chmod 600` it — it
-holds all the secrets.
+One difference from the compose path: cloudflared here shares the server's
+network namespace, so the **tunnel ingress target is
+`http://localhost:8000`**, not `http://notes-mcp:8000`.
 
 ## Deploy / update
 
-**Registry pull (default):** CI publishes `ghcr.io/<owner>/notes-mcp:latest`
-(and a `sha-…` tag per commit) on every push to main. Set
-`IMAGE=ghcr.io/<owner>/notes-mcp:latest` in your env file; then updating is
-just:
+**Registry pull (default):** CI publishes `ghcr.io/johnhringiv/notes-mcp:latest`
+(and a `sha-…` tag per commit) on every push to main, plus a version tag
+(`:0.2.0`) for every `v*` git tag; forks publish to their own GHCR. Set `IMAGE=` in your env file if the default in `.env.example`
+isn't what you want; then updating is just:
 
 ```sh
 sudo sh deploy.sh notes-mcp.env      # pulls the image and replaces both containers
@@ -65,22 +30,24 @@ Public repo → public image, no registry auth needed on the host. Pin a
 **Tarball (offline fallback):** build and `docker save` anywhere, copy it
 over, and pass it as the second argument — the pull is skipped:
 
-````sh
+```sh
 docker build -t notes-mcp:<ver> . && docker save notes-mcp:<ver> | gzip > notes-mcp-<ver>.tar.gz
 sudo IMAGE=notes-mcp:<ver> sh deploy.sh notes-mcp.env notes-mcp-<ver>.tar.gz
-``` The script is idempotent: it replaces both
-containers; the `notes-repo` and `oauth-state` volumes persist, so updates
-keep the repo clone, issued tokens, and the Claude connector registration.
+```
+
+The script is idempotent: it replaces both containers; the `notes-repo` and
+`oauth-state` volumes persist, so updates keep the repo clone, issued
+tokens, and the Claude connector registration.
 
 Verify:
 
 ```sh
-curl https://<host>/health                      # {"status":"ok"}
+curl https://<host>/health                      # {"status":"ok","version":"…"}
 curl -i -X POST https://<host>/mcp | head -3    # 401 + WWW-Authenticate
 sudo docker logs notes-mcp | tail               # structured JSON
-````
+```
 
-## Continuous deploy (optional)
+## Continuous deploy
 
 The host can't accept inbound connections, so deploys are pull-based:
 
@@ -91,18 +58,19 @@ The host can't accept inbound connections, so deploys are pull-based:
    one manifest check, exit. Changed → runs `deploy.sh` and verifies
    `/health`, exiting non-zero if unhealthy.
 
-Set `IMAGE=ghcr.io/<owner>/notes-mcp:prod` in the env file, then on Synology:
-Control Panel → Task Scheduler → Create → Scheduled Task → User-defined
-script, user **root**, repeat every 5 minutes:
+Set `IMAGE=ghcr.io/<owner>/notes-mcp:prod` in the env file, then schedule
+(on Synology: Control Panel → Task Scheduler → Create → Scheduled Task →
+User-defined script, user **root**, repeat every 5 minutes; elsewhere: cron):
 
 ```sh
 cd /path/to/deploy/dir && sh poll-deploy.sh notes-mcp.env >> poll-deploy.log 2>&1
 ```
 
-In the task's Settings tab, enable "Send run details by email … only when the
-script terminates abnormally" to get notified of unhealthy deploys. Press the
-Deploy button once to mint `:prod` before the first poll. To ship every push
-to main instead, point `IMAGE` at `:latest` — same poller, no button.
+On Synology, in the task's Settings tab, enable "Send run details by email …
+only when the script terminates abnormally" to get notified of unhealthy
+deploys. Press the Deploy button once to mint `:prod` before the first poll.
+To ship every push to main instead, point `IMAGE` at `:latest` — same
+poller, no button.
 
 ## Network layout (and why)
 
@@ -111,7 +79,8 @@ to main instead, point `IMAGE` at `:latest` — same poller, no button.
   server's network namespace and reaches it as `localhost:8000`.
 - There is deliberately **no custom bridge network**: Synology's DSM
   firewall silently drops egress from CLI-created custom networks (DNS and
-  all traffic time out) while the default bridge works.
+  all traffic time out) while the default bridge works. (This is exactly why
+  compose — which creates a custom network — is avoided on DSM.)
 - Corollary: if you ever recreate the `notes-mcp` container by hand,
   recreate `cloudflared` too — its namespace reference goes stale. The
   script always recreates both, in order.
@@ -127,6 +96,8 @@ to main instead, point `IMAGE` at `:latest` — same poller, no button.
 | custom SSH port                                                          | DSM often runs SSH off 22               | `ssh -p <port>` but `scp -P <port>` (capital P)               |
 
 ## Troubleshooting
+
+Applies to both the compose and script paths.
 
 - **`curl /health` → 530 / error 1033**: tunnel has no connector →
   `sudo docker logs cloudflared` (token mangled? egress blocked?).
