@@ -1,0 +1,36 @@
+name: Deploy
+
+# Promotes a published image to :prod on GHCR. The host (e.g. a NAS behind a
+# firewall with no inbound access) polls the :prod digest and redeploys when
+# it changes — see deploy/poll-deploy.sh and deploy/README.md.
+# Rollback = re-run this workflow with an older sha-… tag.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Image tag to promote to :prod (latest, or a sha-… tag for rollback)"
+        required: true
+        default: "latest"
+
+jobs:
+  promote:
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+    steps:
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Retag ${{ inputs.tag }} as :prod
+        run: |
+          docker buildx imagetools create \
+            -t ghcr.io/${{ github.repository }}:prod \
+            ghcr.io/${{ github.repository }}:${{ inputs.tag }}
+      - name: Summarize
+        run: |
+          digest=$(docker buildx imagetools inspect ghcr.io/${{ github.repository }}:prod --format '{{json .Manifest.Digest}}')
+          echo "Promoted \`${{ inputs.tag }}\` to \`:prod\` ($digest)" >> "$GITHUB_STEP_SUMMARY"
+          echo "The host poller picks this up within its poll interval." >> "$GITHUB_STEP_SUMMARY"

@@ -80,6 +80,30 @@ curl -i -X POST https://<host>/mcp | head -3    # 401 + WWW-Authenticate
 sudo docker logs notes-mcp | tail               # structured JSON
 ````
 
+## Continuous deploy (optional)
+
+The host can't accept inbound connections, so deploys are pull-based:
+
+1. **Promote:** GitHub → Actions → **Deploy** → Run workflow. It retags a
+   published image (default `latest`; pass a `sha-…` tag to roll back) to
+   `:prod` on GHCR. Registry-side only — takes seconds.
+2. **Poll:** the host runs `poll-deploy.sh` on a schedule. Unchanged tag →
+   one manifest check, exit. Changed → runs `deploy.sh` and verifies
+   `/health`, exiting non-zero if unhealthy.
+
+Set `IMAGE=ghcr.io/<owner>/notes-mcp:prod` in the env file, then on Synology:
+Control Panel → Task Scheduler → Create → Scheduled Task → User-defined
+script, user **root**, repeat every 5 minutes:
+
+```sh
+cd /path/to/deploy/dir && sh poll-deploy.sh notes-mcp.env >> poll-deploy.log 2>&1
+```
+
+In the task's Settings tab, enable "Send run details by email … only when the
+script terminates abnormally" to get notified of unhealthy deploys. Press the
+Deploy button once to mint `:prod` before the first poll. To ship every push
+to main instead, point `IMAGE` at `:latest` — same poller, no button.
+
 ## Network layout (and why)
 
 - `notes-mcp` runs on Docker's **default bridge**.

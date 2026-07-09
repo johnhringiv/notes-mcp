@@ -255,6 +255,10 @@ from the env file) and idempotent; updates re-run it, and the volumes
 (repo clone, OAuth state) persist so updates don't force reconnecting the
 Claude app.
 
+Continuous deploy is pull-based: the Deploy workflow promotes a tag to
+`:prod`; a scheduled poller on the host redeploys on digest change with a
+`/health` gate. Rollback = promote an older `sha-…` tag.
+
 ## Design decisions
 
 Rationale for the choices most likely to be questioned:
