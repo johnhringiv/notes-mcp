@@ -16,6 +16,7 @@ import json
 import re
 import shutil
 import subprocess
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -240,6 +241,9 @@ class NotesStore:
         walk(self.repo_path)
         return found
 
+    def list_note_ids(self) -> list[str]:
+        return self._iter_note_ids()
+
     def _read_meta(self, note_id: str) -> tuple[dict[str, Any], str]:
         text = self.md_path(note_id).read_text(encoding="utf-8")
         return split_frontmatter(text)
@@ -311,7 +315,14 @@ class NotesStore:
             files.append({"name": rel, "size": path.stat().st_size, "type": _file_type(rel)})
         return {"content": content, "files": files, "frontmatter": fm}
 
-    def search_notes(self, query: str, max_results: int = 20) -> dict[str, Any]:
+    def search_notes(
+        self,
+        query: str,
+        max_results: int = 20,
+        allow: Callable[[str], bool] | None = None,
+    ) -> dict[str, Any]:
+        """`allow` filters hits by repo-relative file path before the
+        max_results cap, so hidden matches don't crowd out visible ones."""
         if not query.strip():
             return error("invalid_query", reason="query is empty")
         max_results = max(1, min(max_results, 100))
@@ -344,6 +355,8 @@ class NotesStore:
                 continue
             data = event["data"]
             rel_file = Path(data["path"]["text"]).as_posix().removeprefix("./")
+            if allow is not None and not allow(rel_file):
+                continue
             line_number = data["line_number"]
             hit: dict[str, Any] = {
                 "file": rel_file,

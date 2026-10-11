@@ -104,7 +104,7 @@ def test_history_and_restore_roundtrip(git_repo: Path) -> None:
 
     history = ops.file_history("bikepacking-gear", limit=10)
     assert [h["message"] for h in history[:2]] == ["third", "second"]
-    assert all(set(h) == {"commit", "author", "date", "message"} for h in history)
+    assert all(set(h) == {"commit", "author", "date", "message", "files"} for h in history)
 
     # restore to the "second" version through the full write flow
     target = history[1]["commit"]

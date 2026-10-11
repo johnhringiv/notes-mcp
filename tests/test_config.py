@@ -45,28 +45,49 @@ def test_secret_env_missing_or_bad_file(monkeypatch: pytest.MonkeyPatch, tmp_pat
         _secret_env("GITHUB_TOKEN")
 
 
+AUTH_VARS = (
+    "PUBLIC_URL",
+    "ADMIN_USERS",
+    "GITHUB_ALLOWED_LOGIN",
+    "GITHUB_OAUTH_CLIENT_ID",
+    "GITHUB_OAUTH_CLIENT_SECRET",
+    "GITHUB_OAUTH_CLIENT_SECRET_FILE",
+)
+
+
 def test_auth_env_must_be_complete(monkeypatch: pytest.MonkeyPatch) -> None:
-    for var in (
-        "PUBLIC_URL",
-        "GITHUB_ALLOWED_LOGIN",
-        "GITHUB_OAUTH_CLIENT_ID",
-        "GITHUB_OAUTH_CLIENT_SECRET",
-        "GITHUB_OAUTH_CLIENT_SECRET_FILE",
-        "GITHUB_TOKEN",
-        "GITHUB_TOKEN_FILE",
-    ):
+    for var in (*AUTH_VARS, "GITHUB_TOKEN", "GITHUB_TOKEN_FILE"):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setenv("PUBLIC_URL", "https://mcp.example.com")
     with pytest.raises(ConfigError, match="GITHUB_OAUTH_CLIENT_ID"):
         Settings.from_env()
     monkeypatch.setenv("GITHUB_OAUTH_CLIENT_ID", "cid")
     monkeypatch.setenv("GITHUB_OAUTH_CLIENT_SECRET", "shh")
-    with pytest.raises(ConfigError, match="GITHUB_ALLOWED_LOGIN"):
+    with pytest.raises(ConfigError, match="ADMIN_USERS"):
         Settings.from_env()
-    monkeypatch.setenv("GITHUB_ALLOWED_LOGIN", "alice")
+    monkeypatch.setenv("ADMIN_USERS", "Alice, bob ,")
     settings = Settings.from_env()
     assert settings.auth_enabled
     assert settings.github_oauth_client_secret == "shh"
+    assert settings.admin_users == ("alice", "bob")
+
+
+def test_legacy_github_allowed_login_still_works(monkeypatch: pytest.MonkeyPatch) -> None:
+    for var in AUTH_VARS:
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("PUBLIC_URL", "https://mcp.example.com")
+    monkeypatch.setenv("GITHUB_OAUTH_CLIENT_ID", "cid")
+    monkeypatch.setenv("GITHUB_OAUTH_CLIENT_SECRET", "shh")
+    monkeypatch.setenv("GITHUB_ALLOWED_LOGIN", "alice")
+    assert Settings.from_env().admin_users == ("alice",)
+
+
+def test_oauth_without_public_url_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
+    for var in AUTH_VARS:
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("GITHUB_OAUTH_CLIENT_ID", "cid")
+    with pytest.raises(ConfigError, match="PUBLIC_URL"):
+        Settings.from_env()
 
 
 def test_git_env_carries_askpass_and_password(tmp_path: Path) -> None:

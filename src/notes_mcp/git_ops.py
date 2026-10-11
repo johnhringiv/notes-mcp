@@ -173,10 +173,14 @@ class GitOps:
                 }
             )
 
-    def commit_and_push(self, paths: list[str], message: str) -> dict[str, Any]:
+    def commit_and_push(
+        self, paths: list[str], message: str, author: tuple[str, str] | None = None
+    ) -> dict[str, Any]:
         """Stage paths, commit, push (with one pull+retry on rejection).
 
-        Returns {"committed": bool, "pushed": bool, "commit": sha|None}.
+        `author` (name, email) credits the user the change was made for; the
+        configured identity stays the committer. Defaults to the configured
+        identity for both. Returns {"committed": bool, "pushed": bool, "commit": sha|None}.
         """
         if not self.enabled:
             return {"committed": False, "pushed": False, "commit": None}
@@ -192,7 +196,7 @@ class GitOps:
                 "commit",
                 "-m",
                 message,
-                f"--author={self.author_name} <{self.author_email}>",
+                "--author={} <{}>".format(*(author or (self.author_name, self.author_email))),
             ),
             "commit",
         )
@@ -223,18 +227,38 @@ class GitOps:
         )
 
     def file_history(self, path: str, limit: int = 10) -> list[dict[str, Any]]:
-        """Commits touching `path` (a file or directory), newest first."""
+        """Commits touching `path` (a file or directory), newest first.
+
+        Each entry carries `files`: every path the commit touched, not just
+        those under `path` (--full-diff), so callers can tell whether its
+        message may describe paths the reader can't see.
+        """
         if not self.enabled:
             return []
         result = self._run(
-            "log", f"-{max(1, min(limit, 100))}", "--format=%H%x1f%an%x1f%cI%x1f%s", "--", path
+            "log",
+            f"-{max(1, min(limit, 100))}",
+            "--full-diff",
+            "--name-only",
+            "--format=%x1e%H%x1f%an%x1f%cI%x1f%s",
+            "--",
+            path,
         )
         if result.returncode != 0:
             return []
         entries = []
-        for line in result.stdout.splitlines():
-            sha, author, date, message = line.split("\x1f", 3)
-            entries.append({"commit": sha, "author": author, "date": date, "message": message})
+        for record in result.stdout.split("\x1e")[1:]:
+            header, _, names = record.partition("\n")
+            sha, author, date, message = header.split("\x1f", 3)
+            entries.append(
+                {
+                    "commit": sha,
+                    "author": author,
+                    "date": date,
+                    "message": message,
+                    "files": [n for n in names.splitlines() if n],
+                }
+            )
         return entries
 
     def restore_file(self, commit: str, path: str) -> dict[str, Any] | None:
@@ -278,6 +302,7 @@ def write_flow(
     message: Callable[[dict[str, Any]], str],
     formatter: str | None = None,
     format_markdown_files: bool = True,
+    author: tuple[str, str] | None = None,
 ) -> dict[str, Any]:
     """pull → mutate → format markdown → commit/push.
 
@@ -295,7 +320,7 @@ def write_flow(
         formatted = (
             format_markdown(git_ops.repo_path, paths, formatter) if format_markdown_files else False
         )
-        git_result = git_ops.commit_and_push(paths, message(result))
+        git_result = git_ops.commit_and_push(paths, message(result), author)
         return {**result, "git": {**git_result, "formatted": formatted}}
     except GitError as exc:
         # The tool-call log line only carries the status; record the git

@@ -61,6 +61,13 @@ def test_commit_lands_on_remote_with_author(local: Path, remote: Path, ops: GitO
     assert result["commit"] == git_out(remote, "rev-parse", "HEAD").strip()
 
 
+def test_commit_credits_user_as_author(local: Path, remote: Path, ops: GitOps) -> None:
+    (local / "gear" / "index.md").write_text("changed\n")
+    ops.commit_and_push(["gear/index.md"], "Edit gear", author=("carol", "carol@example.com"))
+    log = git_out(remote, "log", "-1", "--format=%an|%ae|%cn|%ce")
+    assert log.strip() == "carol|carol@example.com|Claude MCP|claude@test"
+
+
 def test_no_change_means_no_commit(ops: GitOps, remote: Path) -> None:
     before = git_out(remote, "rev-parse", "HEAD")
     result = ops.commit_and_push(["gear/index.md"], "noop")
