@@ -54,9 +54,12 @@ The host can't accept inbound connections, so deploys are pull-based:
 1. **Promote:** GitHub → Actions → **Deploy** → Run workflow. It retags a
    published image (default `latest`; pass a `sha-…` tag to roll back) to
    `:prod` on GHCR. Registry-side only — takes seconds.
-2. **Poll:** the host runs `poll-deploy.sh` on a schedule. Unchanged tag →
-   one manifest check, exit. Changed → runs `deploy.sh` and verifies
-   `/health`, exiting non-zero if unhealthy.
+2. **Poll:** the host runs `poll-deploy.sh` on a schedule. Unchanged tag
+   with both containers running and `/health` responding → cheap no-op.
+   Changed tag, **or containers not running (e.g. after a host reboot)** →
+   runs `deploy.sh` and verifies `/health`, exiting non-zero if unhealthy.
+   Containers running but the edge unreachable → exits non-zero without
+   redeploying (tunnel/DNS trouble a redeploy wouldn't fix).
 
 Set `IMAGE=ghcr.io/<owner>/notes-mcp:prod` in the env file, then schedule
 (on Synology: Control Panel → Task Scheduler → Create → Scheduled Task →
@@ -84,6 +87,12 @@ poller, no button.
 - Corollary: if you ever recreate the `notes-mcp` container by hand,
   recreate `cloudflared` too — its namespace reference goes stale. The
   script always recreates both, in order.
+- Corollary 2: on host reboot, Docker restores containers in no particular
+  order — if `cloudflared` starts before `notes-mcp` is running, joining its
+  namespace fails at start time and Docker does **not** retry, leaving the
+  service down. `poll-deploy.sh` detects this (unchanged image, containers
+  not running) and redeploys within one poll cycle; without the poller,
+  restart the containers by hand (`notes-mcp` first) or re-run `deploy.sh`.
 
 ## Synology (DSM) gotchas — all hit in practice
 
