@@ -20,7 +20,8 @@ services:
       PUBLIC_URL: ${PUBLIC_URL:?set in .env}
       GITHUB_OAUTH_CLIENT_ID: ${GITHUB_OAUTH_CLIENT_ID:?set in .env}
       GITHUB_OAUTH_CLIENT_SECRET: ${GITHUB_OAUTH_CLIENT_SECRET:?set in .env}
-      GITHUB_ALLOWED_LOGIN: ${GITHUB_ALLOWED_LOGIN:?set in .env}
+      ADMIN_USERS: ${ADMIN_USERS:-}
+      GITHUB_ALLOWED_LOGIN: ${GITHUB_ALLOWED_LOGIN:-}
       LOG_LEVEL: ${LOG_LEVEL:-info}
     volumes:
       - notes-repo:/repo

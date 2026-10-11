@@ -3,8 +3,9 @@
 A self-hosted remote MCP server that exposes a personal notes git repository
 to Claude via the mobile/web app: list, read, search, create, append to, and
 edit notes; store files; execute scripts inside note folders. Every write is
-a git commit pushed to the repo's remote. Designed for a single trusted user
-running one container on a home server, exposed through a Cloudflare Tunnel.
+a git commit pushed to the repo's remote. Designed for one owner who can
+share chosen folders with a few others such as a household, running one
+container on a home server, exposed through a Cloudflare Tunnel.
 
 - Operational how-to (dev loop, container, deploy): `README.md`, `deploy/README.md`
 - Configuration reference: `.env.example` (every variable, commented)
@@ -18,7 +19,8 @@ connector; survives unattended on a NAS.
 
 **Non-goals (deferred to v2):** async/job-based script execution; a
 status/dashboard endpoint; a webapp UI; writing scripts via MCP
-(model-generated executable code committed to the repo); multi-user support;
+(model-generated executable code committed to the repo); per-member script
+sandboxes (members can't run scripts); web uploads of large binaries (#3);
 note deletion via MCP; wiki-style backlink management; committing script
 outputs; PR-based conflict handling; the **semantic layer** — staged plan:
 the `index: true` note-frontmatter convention and the resource class exist
@@ -198,16 +200,28 @@ greppable next to your own.
 
 ## Authentication
 
-**This server is the OAuth 2.1 authorization server**; GitHub is the
-upstream identity provider.
+**This server is the OAuth 2.1 authorization server.** Two kinds of
+principal (`members.py`):
+
+- **Admins:** GitHub users in `ADMIN_USERS`. Full access, scripts, and the
+  admin page.
+- **Members:** created on the admin page. Each signs in with GitHub and/or
+  an access code and has per-path grants.
 
 Flow: the Claude connector registers via Dynamic Client Registration →
-`/authorize` validates the client and redirects to GitHub → GitHub redirects
-to `/auth/callback` → the server exchanges the code, fetches the user, and
-**rejects any login except `GITHUB_ALLOWED_LOGIN`** (403 by name) → issues
-its own authorization code → the client exchanges it at `/token` (PKCE S256
-verified) for tokens.
+`/authorize` validates the client and sends the browser to our login page
+(`/auth/login`) → the person picks **Sign in with GitHub** (→ GitHub →
+`/auth/callback`) or enters an **access code** (→ `/auth/code`) → the server
+maps that to a principal or refuses (403) → issues its own authorization
+code → the client exchanges it at `/token` (PKCE S256 verified) for tokens.
 
+- GitHub people are matched by **numeric account id, never username**.
+  Usernames can be renamed and then re-registered by someone else. Admins'
+  ids are pinned at first sign-in; members' ids are resolved when an admin
+  adds them by username.
+- Access codes are 192-bit random (`nm_…`), stored only as SHA-256
+  hashes, and shown to the admin once. Five wrong codes end the pending
+  login.
 - The MCP SDK provides the endpoints:
   `/.well-known/oauth-protected-resource/mcp`,
   `/.well-known/oauth-authorization-server`, `/register`, `/authorize`,
@@ -215,16 +229,98 @@ verified) for tokens.
   `WWW-Authenticate: Bearer ... resource_metadata="..."` on `/mcp` that the
   Claude connector requires for discovery.
 - Tokens are stateless HS256 JWTs (`iss` = PUBLIC_URL, `aud` = notes-mcp,
-  `sub` = GitHub login): access 1 h, refresh 30 d, rotated on refresh.
-- The signing secret and DCR client registrations persist in
-  `OAUTH_STATE_DIR` (the `/data` volume) so tokens and the connector survive
-  container restarts. Auth codes and pending states are in-memory (minutes).
-- Revocation is a no-op (stateless tokens, single user); rotating the signing
-  secret (delete `<state>/signing_secret`, restart) force-expires everything.
-- Auth is enabled iff `PUBLIC_URL` is set; without it the server runs open
-  for local dev and logs a warning. `GET /health` is always public.
+  `sub` = `admin:<github id>` or `member:<name>`, `gen` = the member's
+  generation): access 1 h, refresh 30 d, rotated on refresh.
+- **Every use re-resolves the principal**, so revocation is immediate:
+  deleting a member, replacing or removing their code, relinking their
+  GitHub, or "End sessions" bumps the generation and kills every outstanding
+  token. Dropping a name from `ADMIN_USERS` (restart) revokes that admin.
+  The revoke endpoint is a no-op. Rotating the signing secret (delete
+  `<state>/signing_secret`, restart) force-expires everyone.
+- Grants are **not** in tokens. Editing a member's grants applies on their
+  next tool call, with no new token.
+- Signing secret, client registrations and members (`members.json`, 0600)
+  persist in `OAUTH_STATE_DIR` (the `/data` volume). Auth codes and pending
+  logins are in-memory (minutes).
+- Writes are committed with the calling principal as git author: an admin
+  as `<id>+<login>@users.noreply.github.com`, a member by GitHub noreply or
+  `<name>@members.notes-mcp.invalid`. The configured `GIT_AUTHOR_*` identity
+  is the committer. The caller is read from the HTTP request on each MCP
+  message, not the SDK's auth contextvar, which a long-lived session task
+  can carry stale.
+- Auth is enabled iff `PUBLIC_URL` is set. Without it the server runs open
+  for local dev (one implicit admin) and logs a warning. With it, the
+  server refuses to start unless the repo is a git repository: members are
+  promised recoverable, attributed writes. `GET /health` is always public.
 - The GitHub OAuth app needs callback `<PUBLIC_URL>/auth/callback`, device
-  flow off; the server requests only the `read:user` scope.
+  flow off. The server requests only the `read:user` scope. Admin sign-in
+  reuses the same callback.
+
+### Admin page (`/admin`)
+
+Server-rendered HTML forms, no scripts, for ADMIN_USERS. Actions: add or
+delete members, link or unlink a GitHub account, create, replace or remove
+an access code, end sessions, and grant a path read-only or read-write
+(suggestions list the repo's folders; any pattern is accepted).
+
+- **Not an MCP tool, on purpose.** The model can be steered by the content
+  it reads; who-may-see-what changes only through a page a human operates.
+- **Session:** an `admin_session` JWT in a cookie (HttpOnly, SameSite=Lax,
+  Secure on https, Path=/admin, 8 h), re-checked against ADMIN_USERS on
+  every request. MCP bearer tokens are never accepted.
+- **Requests:** every POST carries a CSRF token bound to the session, and
+  a cross-origin `Origin` is refused.
+- **Headers:** CSP `default-src 'none'` (inline styles only),
+  `frame-ancestors 'none'`, no-store.
+- **Optional extra lock:** put Cloudflare Access in front of `/admin*` only.
+  Access breaks the MCP connector, not browser pages.
+
+## Access control
+
+Members' grants are repo-relative path patterns, each `ro` or `rw` (globs;
+resources are `resources/<id>`; a pattern covers everything beneath what it
+names; rw implies read). A member with no grants sees nothing. Policy lives
+in server state edited by admins, never in note content: sharing by
+frontmatter would let a prompt-injected model share notes by editing them.
+
+Enforcement has one choke point. Every tool is wrapped by `guarded(...)`,
+which names the arguments that are paths and whether they are read or
+written; registration fails at import if any tool lacks a declaration.
+
+- Unreadable paths answer exactly like missing ones (`note_not_found`,
+  `resource_not_found`): no existence leak. Unwritable paths answer
+  `forbidden` whether or not they exist.
+- A request that carries no resolvable principal while auth is on sees
+  nothing (fail closed).
+- list/search filter their output per item; search filters before the
+  `max_results` cap so hidden hits can't crowd out visible ones.
+- Paths are also checked where they really point, so a symlink committed
+  into a shared folder doesn't carry the share.
+- `note_history` hides the message of any commit that also touched a path
+  the reader can't see (messages name paths, e.g. "Move a to b").
+- `run_script` is admin-only, even for a member granted `**`: a script reads
+  the whole checkout, and a member could upload one into a folder they can
+  write. A per-member filtered checkout could lift this later.
+- Grants are path-based, so a path's whole history belongs to whoever can
+  read the path today, including content from before it was shared.
+- **Members can't destroy anything permanently.** Every member write is a
+  git commit, nothing rewrites history (no force-push, no rebase of pushed
+  commits), there is no delete tool, and attachments are ordinary git blobs
+  (no LFS; see #2). Anything a member changes can be restored from history.
+- **Assurance** is a canary sweep (`tests/test_access.py`), not a proof.
+  Private content carries a marker. A read-write and a read-only member each
+  call every registered tool with hostile arguments: traversal, prefix
+  tricks, private commit shas, moves out of and into private areas. After
+  each call, no response may contain the marker, no file outside their
+  write grants may change, the tree must be clean, and HEAD must still
+  descend from the original commit (a read-only member must not move it).
+  Removing or weakening any single guard, token check, or admin-page check
+  makes some test fail (mutation-checked).
+- **Considered and deferred: Cedar** (a policy language with a
+  Lean-verified analyzer). Its proofs cover the policy, not whether the
+  code consults it, which is where the risk is, and path globs don't need
+  its expressiveness. The decision is one `Grants` object, so swapping in a
+  policy engine later is local.
 
 ## Container & security model
 
@@ -234,7 +330,7 @@ verified) for tokens.
 - `--memory 2g`. No `--cpus` (unsupported on Synology DSM kernels); script
   timeouts bound CPU abuse.
 - Arbitrary code execution is accepted in v1: the container is the sandbox,
-  single trusted user, git is audit and recovery.
+  admins only (members can't run scripts), git is audit and recovery.
 - Secrets are env vars (`GITHUB_TOKEN`, `GITHUB_OAUTH_CLIENT_SECRET`), each
   with a `_FILE` variant for Docker-secret setups. Accepted trade-off: env
   vars are visible in `docker inspect`.

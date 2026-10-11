@@ -76,8 +76,15 @@ cp .env.example .env && chmod 600 .env
 
 Fill in `.env`: `NOTES_REPO_URL`, `GITHUB_TOKEN` (the PAT), `PUBLIC_URL`
 (`https://<your-hostname>`), `GITHUB_OAUTH_CLIENT_ID`,
-`GITHUB_OAUTH_CLIENT_SECRET`, `GITHUB_ALLOWED_LOGIN` (your GitHub username),
-and `TUNNEL_TOKEN`. Every variable is documented in the file.
+`GITHUB_OAUTH_CLIENT_SECRET`, `ADMIN_USERS` (your GitHub username), and
+`TUNNEL_TOKEN`. Every variable is documented in the file.
+
+**Sharing with others.** Sign in at `https://<your-hostname>/admin` to add
+members. Each member signs in with their GitHub account or with an access
+code you generate (no account needed), and sees only the folders you grant,
+each read-only or read-write. Changes apply on their next request.
+Members can't run scripts, and every write they make is a commit credited
+to them, so nothing they do is irreversible.
 
 ### 5. Run
 
@@ -170,6 +177,9 @@ uv run ty check
 
 # run locally against any notes working tree (git optional; push needs origin)
 NOTES_REPO_PATH=~/notes MCP_PORT=8000 uv run notes-mcp
+
+# iterate on the login/admin pages: auth on, fake GitHub, scratch repo, autoreload
+uv run python dev/serve.py               # http://localhost:8000/admin
 ```
 
 Requires `git` and `rg` (ripgrep) on PATH; `prettier` optional locally
