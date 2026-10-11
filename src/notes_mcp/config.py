@@ -56,9 +56,9 @@ class Settings:
     script_timeout_default: int
     script_timeout_max: int
     public_url: str | None
+    admin_users: tuple[str, ...]
     github_oauth_client_id: str | None
     github_oauth_client_secret: str | None
-    github_allowed_login: str | None
     oauth_state_dir: Path
 
     @property
@@ -81,15 +81,22 @@ class Settings:
             )
 
         public_url = (os.environ.get("PUBLIC_URL") or "").rstrip("/") or None
+        # GITHUB_ALLOWED_LOGIN is the pre-multi-user spelling; still honored.
+        raw_admins = os.environ.get("ADMIN_USERS") or os.environ.get("GITHUB_ALLOWED_LOGIN") or ""
+        admin_users = tuple(u.strip().lower() for u in raw_admins.split(",") if u.strip())
         gh_client_id = os.environ.get("GITHUB_OAUTH_CLIENT_ID") or None
         gh_oauth_secret = _secret_env("GITHUB_OAUTH_CLIENT_SECRET")
-        gh_allowed_login = os.environ.get("GITHUB_ALLOWED_LOGIN") or None
-        if public_url and not (gh_client_id and gh_oauth_secret and gh_allowed_login):
-            raise ConfigError(
-                "PUBLIC_URL is set (auth enabled) but GITHUB_OAUTH_CLIENT_ID / "
-                "GITHUB_OAUTH_CLIENT_SECRET(_FILE) / GITHUB_ALLOWED_LOGIN are missing"
-            )
-        if (gh_client_id or gh_oauth_secret) and not public_url:
+        if public_url:
+            required = {
+                "GITHUB_OAUTH_CLIENT_ID": gh_client_id,
+                "GITHUB_OAUTH_CLIENT_SECRET(_FILE)": gh_oauth_secret,
+                "ADMIN_USERS": ",".join(admin_users) or None,
+            }
+            if missing := [name for name, value in required.items() if not value]:
+                raise ConfigError(
+                    f"PUBLIC_URL is set (auth enabled) but {' / '.join(missing)} missing"
+                )
+        elif gh_client_id or gh_oauth_secret:
             raise ConfigError("GITHUB_OAUTH_* set but PUBLIC_URL is missing")
 
         return cls(
@@ -107,9 +114,9 @@ class Settings:
             script_timeout_default=script_timeout_default,
             script_timeout_max=script_timeout_max,
             public_url=public_url,
+            admin_users=admin_users,
             github_oauth_client_id=gh_client_id,
             github_oauth_client_secret=gh_oauth_secret,
-            github_allowed_login=gh_allowed_login,
             oauth_state_dir=Path(os.environ.get("OAUTH_STATE_DIR", "/data")),
         )
 
