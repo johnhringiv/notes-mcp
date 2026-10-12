@@ -125,10 +125,14 @@ class MemberStore:
         self._members: dict[str, Member] = {}
         # admin login (lowercase) → pinned GitHub id (None until first login)
         self._admins: dict[str, int | None] = {}
+        # admin login → admin-page session generation; signing out bumps it,
+        # ending every admin-page session of theirs (MCP tokens unaffected)
+        self._admin_sessions: dict[str, int] = {}
         self._load()
         configured = {login.strip().lower() for login in admin_logins if login.strip()}
         # Dropping a login from ADMIN_USERS drops its pin, which revokes it.
         self._admins = {login: self._admins.get(login) for login in configured}
+        self._admin_sessions = {k: v for k, v in self._admin_sessions.items() if k in self._admins}
 
     # ------------------------------------------------------------------
     # persistence
@@ -138,6 +142,7 @@ class MemberStore:
             return
         raw = json.loads(self.path.read_text())
         self._admins = {k: v for k, v in raw.get("admins", {}).items()}
+        self._admin_sessions = {k: int(v) for k, v in raw.get("admin_sessions", {}).items()}
         for data in raw.get("members", []):
             grants = [Grant(g["path"], g["mode"]) for g in data.pop("grants", [])]
             member = Member(**data, grants=grants)
@@ -146,6 +151,7 @@ class MemberStore:
     def _save(self) -> None:
         data = {
             "admins": self._admins,
+            "admin_sessions": self._admin_sessions,
             "members": [asdict(m) for m in self._members.values()],
         }
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -226,6 +232,24 @@ class MemberStore:
                     is_admin=False,
                 )
         return None
+
+    def _admin_login(self, subject: str) -> str | None:
+        kind, _, key = subject.partition(":")
+        if kind != "admin":
+            return None
+        return next((k for k, v in self._admins.items() if v is not None and str(v) == key), None)
+
+    def admin_session_generation(self, subject: str) -> int:
+        with self._lock:
+            login = self._admin_login(subject)
+            return self._admin_sessions.get(login, 0) if login else 0
+
+    def end_admin_sessions(self, subject: str) -> None:
+        """Sign an admin out of the admin page everywhere."""
+        with self._lock:
+            if login := self._admin_login(subject):
+                self._admin_sessions[login] = self._admin_sessions.get(login, 0) + 1
+                self._save()
 
     def is_admin_subject(self, subject: str) -> bool:
         principal = self.resolve(subject)
