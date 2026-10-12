@@ -350,7 +350,13 @@ class NotesOAuthProvider:
             if subject is None or not self.members.is_admin_subject(subject):
                 logger.warning("rejected admin login", extra={"login": user.login})
                 raise CallbackError(f"GitHub user {user.login!r} is not an admin", status=403)
-            session = self._mint("admin_session", "admin", subject, ADMIN_SESSION_TTL)
+            session = self._mint(
+                "admin_session",
+                "admin",
+                subject,
+                ADMIN_SESSION_TTL,
+                gen=self.members.admin_session_generation(subject),
+            )
             return CallbackResult(f"{self.issuer_url}/admin", admin_session=session)
         if subject is None:
             logger.warning("rejected github login", extra={"login": user.login, "id": user.id})
@@ -378,9 +384,14 @@ class NotesOAuthProvider:
         if not token:
             return None
         claims = self._verify(token, "admin_session")
-        if claims is None or not self.members.is_admin_subject(str(claims["sub"])):
+        if claims is None:
             return None
-        return str(claims["sub"])
+        subject = str(claims["sub"])
+        if not self.members.is_admin_subject(subject):
+            return None
+        if claims.get("gen", 0) != self.members.admin_session_generation(subject):
+            return None  # signed out since this session began
+        return subject
 
     def csrf_token(self, session: str) -> str:
         return hmac.new(

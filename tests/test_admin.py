@@ -56,6 +56,12 @@ async def post(client: httpx.AsyncClient, csrf: str, **fields: str) -> httpx.Res
     return await client.post("/admin", data={"csrf": csrf, **fields})
 
 
+def is_signed_out(resp: httpx.Response) -> bool:
+    """The sign-in page, not the admin page (which always carries a CSRF field)."""
+    page = resp.text
+    return resp.status_code == 200 and "href='/admin/login'" in page and "csrf" not in page
+
+
 @pytest.fixture
 async def admin(client: httpx.AsyncClient) -> str:
     """Log alice in; returns a CSRF token for her session."""
@@ -71,9 +77,8 @@ async def admin(client: httpx.AsyncClient) -> str:
 
 
 async def test_admin_page_requires_login(client: httpx.AsyncClient) -> None:
-    resp = await client.get("/admin")
-    assert resp.status_code == 303
-    assert resp.headers["location"] == "/admin/login"
+    # A sign-in button, not a bounce to GitHub (which would re-approve silently).
+    assert is_signed_out(await client.get("/admin"))
 
 
 async def test_session_cookie_attributes(client: httpx.AsyncClient) -> None:
@@ -92,13 +97,13 @@ async def test_member_and_stranger_cannot_be_admin(
     server.members.add_member("bob", GitHubUser(2, "bob"))
     assert (await admin_login(client, "bob-code")).status_code == 403
     assert (await admin_login(client, "mallory-code")).status_code == 403
-    assert (await client.get("/admin")).status_code == 303
+    assert is_signed_out(await client.get("/admin"))
 
 
 async def test_mcp_token_does_not_open_admin(client: httpx.AsyncClient) -> None:
     token = await connect_github(client, "alice-code")
     resp = await client.get("/admin", headers={"Authorization": f"Bearer {token['access_token']}"})
-    assert resp.status_code == 303  # bounced to login: bearer tokens are ignored here
+    assert is_signed_out(resp)  # bearer tokens are ignored here
     resp = await client.post(
         "/admin",
         headers={"Authorization": f"Bearer {token['access_token']}"},
@@ -118,7 +123,7 @@ async def test_dropped_admin_session_dies(
         base_url="http://localhost:8000",
         cookies={SESSION_COOKIE: cookie or ""},
     ) as c:
-        assert (await c.get("/admin")).status_code == 303
+        assert is_signed_out(await c.get("/admin"))
 
 
 # ----------------------------------------------------------------------
@@ -220,8 +225,29 @@ async def test_grant_suggestions_list_repo_folders(client: httpx.AsyncClient, ad
 
 async def test_logout(client: httpx.AsyncClient, admin: str) -> None:
     resp = await post(client, admin, op="logout")
-    assert resp.status_code == 303
-    assert (await client.get("/admin")).status_code == 303
+    assert resp.status_code == 303 and resp.headers["location"] == "/admin?signed_out"
+    page = await client.get(resp.headers["location"])
+    assert is_signed_out(page) and "Signed out" in page.text
+    assert (await admin_login(client)).status_code == 303  # can sign back in
+    assert "Sign out" in (await client.get("/admin")).text
+
+
+async def test_logout_ends_copied_sessions_but_not_claude(
+    app: Any, server: ModuleType, client: httpx.AsyncClient
+) -> None:
+    """Sign-out is server-side: a copied cookie dies too. Claude stays connected."""
+    token = await connect_github(client, "alice-code")
+    await admin_login(client)
+    stolen = client.cookies[SESSION_COOKIE]
+    csrf = csrf_of((await client.get("/admin")).text)
+    await post(client, csrf, op="logout")
+
+    client.cookies.set(SESSION_COOKIE, stolen)
+    assert is_signed_out(await client.get("/admin"))
+    assert (await post(client, csrf, op="add_member", name="eve")).status_code == 403
+    assert server.members.members() == []
+    async with app.router.lifespan_context(app):
+        assert await mcp_status(client, token["access_token"]) == 200
 
 
 async def test_member_session_token_is_not_an_admin_session(server: ModuleType) -> None:

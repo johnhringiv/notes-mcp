@@ -178,6 +178,25 @@ def error_page(message: str, status: int, start_again: bool = False) -> HTMLResp
     )
 
 
+def signed_out_page(signed_out: bool) -> HTMLResponse:
+    """Where /admin lands without a session. Not an automatic bounce to GitHub:
+    GitHub approves an app you've used before without asking, so signing out
+    would land you straight back in."""
+    if signed_out:
+        head = "<h1>Signed out</h1><div class=alert>You're signed out of the admin page.</div>"
+        note = (
+            "<p class=muted>You may still be signed in to GitHub itself; on a shared "
+            "computer, sign out at github.com too.</p>"
+        )
+    else:
+        head, note = "<h1>Admin</h1>", ""
+    return _page(
+        "Admin sign-in",
+        f"""{head}<div class=card><h3>Manage who can use your notes</h3>
+<a class='btn primary' href='/admin/login'>Sign in with GitHub</a></div>{note}""",
+    )
+
+
 def login_page(state: str, message: str | None = None, status: int = 200) -> HTMLResponse:
     err = f"<div class='alert err'>{escape(message)}</div>" if message else ""
     s = escape(state, quote=True)
@@ -373,7 +392,7 @@ def register(
             return disabled()
         session = session_of(request)
         if session is None:
-            return RedirectResponse("/admin/login", status_code=303)
+            return signed_out_page("signed_out" in request.query_params)
         return render(session)
 
     @mcp.custom_route("/admin", methods=["POST"])  # type: ignore[untyped-decorator]
@@ -382,7 +401,7 @@ def register(
             return disabled()
         session = session_of(request)
         if session is None:
-            return error_page("Your admin session expired. Sign in again at /admin.", 403)
+            return error_page("Your admin session ended.", 403, start_again=True)
         origin = request.headers.get("origin")
         if origin and urlparse(origin).netloc != urlparse(provider.issuer_url).netloc:
             return error_page("Cross-origin request refused.", 403)
@@ -392,7 +411,9 @@ def register(
             return error_page("Form expired or forged (CSRF check failed). Reload /admin.", 403)
         fields = {k: str(v) for k, v in form.items()}
         if fields.get("op") == "logout":
-            response = RedirectResponse("/admin/login", status_code=303)
+            # Ends this admin's sessions everywhere, not just this cookie.
+            members.end_admin_sessions(session[0])
+            response = RedirectResponse("/admin?signed_out", status_code=303)
             response.delete_cookie(SESSION_COOKIE, path="/admin")
             return response
         # Keep the member being edited expanded after the round trip.
