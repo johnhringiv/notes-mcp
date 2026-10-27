@@ -5,6 +5,10 @@
 # join its network namespace) also triggers a redeploy, which recreates both
 # containers in the correct order.
 #
+# The tunnel image (CLOUDFLARED_IMAGE, default cloudflare/cloudflared:latest)
+# is followed too: when only it changed, just the cloudflared container is
+# replaced (ONLY=tunnel deploy.sh) and notes-mcp keeps running.
+#
 # Runs from a scheduler on the host (e.g. Synology DSM Task Scheduler, every
 # 5 minutes, as root). An unchanged healthy tag costs one manifest check and
 # one /health probe; layers only download when the Deploy workflow has
@@ -28,6 +32,12 @@ if [ -z "$IMAGE" ]; then
 fi
 [ -n "$IMAGE" ] || { echo "IMAGE not set in $ENV_FILE"; exit 1; }
 
+if [ -z "$CLOUDFLARED_IMAGE" ]; then
+    CLOUDFLARED_IMAGE=$(grep -E '^CLOUDFLARED_IMAGE=' "$ENV_FILE" | tail -1 | cut -d= -f2-)
+fi
+CLOUDFLARED_IMAGE="${CLOUDFLARED_IMAGE:-cloudflare/cloudflared:latest}"
+export CLOUDFLARED_IMAGE
+
 PUBLIC_URL=$(grep -E '^PUBLIC_URL=' "$ENV_FILE" | tail -1 | cut -d= -f2-)
 
 container_running() {
@@ -46,6 +56,26 @@ edge_healthy() {
     return 1
 }
 
+# After a (re)deploy: wait up to a minute for the edge to answer.
+wait_healthy() {
+    if [ -z "$PUBLIC_URL" ]; then
+        echo "$(date -u +%FT%TZ) $1 (no PUBLIC_URL; health check skipped)"
+        exit 0
+    fi
+    i=0
+    while [ $i -lt 12 ]; do
+        if curl -sf -m 5 "$PUBLIC_URL/health" >/dev/null 2>&1; then
+            echo "$(date -u +%FT%TZ) $1 healthy"
+            docker image prune -f >/dev/null
+            exit 0
+        fi
+        i=$((i + 1))
+        sleep 5
+    done
+    echo "$(date -u +%FT%TZ) $1 UNHEALTHY: $PUBLIC_URL/health not responding"
+    exit 1
+}
+
 # Before the first promotion the tag may not exist; that is not an error.
 if ! docker pull -q "$IMAGE" >/dev/null 2>&1; then
     echo "$(date -u +%FT%TZ) pull failed for $IMAGE (tag not published yet?); skipping"
@@ -55,8 +85,19 @@ fi
 latest=$(docker image inspect "$IMAGE" --format '{{.Id}}')
 running=$(docker inspect notes-mcp --format '{{.Image}}' 2>/dev/null || echo "none")
 
+# A failed tunnel pull is not fatal: the running tunnel keeps working.
+docker pull -q "$CLOUDFLARED_IMAGE" >/dev/null 2>&1 \
+    || echo "$(date -u +%FT%TZ) pull failed for $CLOUDFLARED_IMAGE; keeping current tunnel"
+tunnel_latest=$(docker image inspect "$CLOUDFLARED_IMAGE" --format '{{.Id}}' 2>/dev/null || echo "none")
+tunnel_running=$(docker inspect cloudflared --format '{{.Image}}' 2>/dev/null || echo "none")
+
 if [ "$latest" = "$running" ]; then
     if container_running notes-mcp && container_running cloudflared; then
+        if [ "$tunnel_latest" != "none" ] && [ "$tunnel_latest" != "$tunnel_running" ]; then
+            echo "$(date -u +%FT%TZ) new image for $CLOUDFLARED_IMAGE (running=$tunnel_running -> $tunnel_latest); replacing tunnel only"
+            ONLY=tunnel sh "$DIR/deploy.sh" "$ENV_FILE"
+            wait_healthy "tunnel update"
+        fi
         if edge_healthy; then
             exit 0
         fi
@@ -69,19 +110,4 @@ else
 fi
 
 sh "$DIR/deploy.sh" "$ENV_FILE"
-
-if [ -n "$PUBLIC_URL" ]; then
-    i=0
-    while [ $i -lt 12 ]; do
-        if curl -sf -m 5 "$PUBLIC_URL/health" >/dev/null 2>&1; then
-            echo "$(date -u +%FT%TZ) deploy healthy"
-            docker image prune -f >/dev/null
-            exit 0
-        fi
-        i=$((i + 1))
-        sleep 5
-    done
-    echo "$(date -u +%FT%TZ) DEPLOY UNHEALTHY: $PUBLIC_URL/health not responding"
-    exit 1
-fi
-echo "$(date -u +%FT%TZ) deployed (no PUBLIC_URL; health check skipped)"
+wait_healthy "deploy"
