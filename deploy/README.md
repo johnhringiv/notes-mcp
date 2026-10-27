@@ -58,8 +58,12 @@ The host can't accept inbound connections, so deploys are pull-based:
    with both containers running and `/health` responding → cheap no-op.
    Changed tag, **or containers not running (e.g. after a host reboot)** →
    runs `deploy.sh` and verifies `/health`, exiting non-zero if unhealthy.
-   Containers running but the edge unreachable → exits non-zero without
-   redeploying (tunnel/DNS trouble a redeploy wouldn't fix).
+   Tunnel image changed (`CLOUDFLARED_IMAGE`, default
+   `cloudflare/cloudflared:latest`) → replaces only the `cloudflared`
+   container (`ONLY=tunnel sh deploy.sh`) and verifies `/health`;
+   notes-mcp keeps running and the hostname is unreachable for a few
+   seconds. Containers running but the edge unreachable → exits non-zero
+   without redeploying (tunnel/DNS trouble a redeploy wouldn't fix).
 
 Set `IMAGE=ghcr.io/<owner>/notes-mcp:prod` in the env file, then schedule
 (on Synology: Control Panel → Task Scheduler → Create → Scheduled Task →
